@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>词书管理-AILex</title>
+    <!-- Bootstrap 5 CSS【本地化】：走 Flask 的 static 目录（打包后离线可用，不再依赖 CDN） -->
+    <link href="{{ url_for('static', filename='bootstrap.min.css') }}" rel="stylesheet">
+
+    <!-- 【防跳动】强制页面始终显示垂直滚动条：
+         有的页面内容多（出现滚动条）、有的内容少（无滚动条），
+         切换页面时滚动条的出现/消失会让可视区域宽度变化，
+         页面整体就会横向跳动一下；常驻滚动条可彻底消除这个位移 -->
+    <style>
+        html { overflow-y: scroll; }
+    </style>
+</head>
+<body class="bg-light">
+    <!-- 【防跳动】容器样式与首页 index.html 完全一致：
+         1. max-width 960px —— 四个页面统一宽度，避免切换时宽度忽宽忽窄；
+         2. min-height: 100vh —— 内容再少也撑满视口高度，
+            防止页面高度骤降引发的纵向视觉跳动 -->
+    <div class="container py-4" style="max-width: 960px; min-height: 100vh;">
+
+        <!-- ========== 顶部标题 ========== -->
+        <h1 class="h3 mb-3">词书管理</h1>
+
+        <!-- ========== 共享导航栏 ========== -->
+        {% include 'nav.html' %}
+
+        <!-- ========== flash 提示（重命名/切换/删除/重置结果） ========== -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% for category, message in messages %}
+            {# 【对齐修复】容器加 d-flex align-items-center，文字包进 flex-grow-1 me-3：
+               旧写法里 {{ message }} 是裸文本、与 inline 的关闭按钮按"基线"对齐，
+               按钮盒子比文字行高大，于是 ❌ 看起来偏上/错位。
+               现在文字占满剩余宽度（flex-grow-1）并与按钮留 1rem 间距（me-3），
+               btn-close 排在最右，两者垂直绝对居中。
+               颜色分类逻辑（success 绿 / 其他红）保持不变 #}
+            <div class="alert alert-{{ 'success' if category == 'success' else 'danger' }} alert-dismissible fade show d-flex align-items-center py-2"
+                 role="alert">
+                <div class="flex-grow-1 me-3">{{ message }}</div>
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="关闭"></button>
+            </div>
+            {% endfor %}
+        {% endwith %}
+
+        <!-- ========== 页面说明 ========== -->
+        <div class="alert alert-warning py-2">
+            点击“切换至此词书”即可开始学习对应的书；新词书通过首页的“上传词书”添加。
+        </div>
+
+        <!-- ========== 词书列表 ==========
+             后端变量名全部保留：
+               book['id'] / book['name'] / book['created_at'] / book['word_count']
+               current_book_id（用于高亮当前词书） -->
+        {% for book in book_list %}
+        <div class="card shadow-sm rounded-3 mb-2 {% if book['id'] == current_book_id %}border-primary{% endif %}">
+            <div class="card-body py-3 d-flex flex-wrap justify-content-between align-items-center gap-2">
+                <div class="book-info">
+                    {# 当前词书名字前加 ✅ #}
+                    <div class="fw-bold fs-5">
+                        {% if book['id'] == current_book_id %}✅ {% endif %}{{ book['name'] }}
+                    </div>
+                    <div class="text-muted small">
+                        创建时间：{{ book['created_at'] }} ｜ 共 {{ book['word_count'] }} 个单词
+                    </div>
+                </div>
+
+                {# 右侧操作区：重命名 +（当前：绿色徽章/重置 ｜ 其他：切换）+ 删除（系统词书除外）#}
+                <div class="d-flex flex-wrap align-items-center gap-2">
+                    {# 重命名：参数挂 data-id / data-name，交给 renameBook()（下方 JS 原样保留），
+                       避免把词书名拼进 onclick 导致的引号冲突 #}
+                    <button type="button" class="btn btn-outline-secondary btn-sm"
+                            data-id="{{ book['id'] }}"
+                            data-name="{{ book['name'] }}"
+                            onclick="renameBook(this)">重命名</button>
+
+                    {% if book['id'] == current_book_id %}
+                        {# 当前正在学的书：绿色徽章 + 重置进度按钮（POST /reset_book）#}
+                        <span class="badge text-bg-success px-3 py-2">当前学习中</span>
+                        <form action="{{ url_for('reset_book') }}" method="POST">
+                            <button type="submit" class="btn btn-outline-danger btn-sm"
+                                    onclick="return confirm('确定要重置该词书的学习进度吗？历史学习记录会保留，但单词会重新回到未学状态。');">重置进度</button>
+                        </form>
+                    {% else %}
+                        {# 其他书：点击切换（GET /select_book/<id>）#}
+                        <a href="{{ url_for('select_book', book_id=book['id']) }}"
+                           class="btn btn-primary btn-sm">切换至此词书</a>
+                    {% endif %}
+
+                    {# 删除词书：POST /delete_book/<id> + onsubmit 二次确认。
+                       保护规则与后端一致（前端隐藏 + 后端拦截双保险）：
+                       id=1 默认词库、4 本 AI 分类词书（AI评估词库-六级/雅思/托福/考研）
+                       都不显示删除按钮（书名以"AI评估词库-"开头即命中）。
+                       注意 confirm 写在 form 的 onsubmit 上，文案为纯静态字符串，
+                       不含模板变量，彻底避免引号冲突 #}
+                    {% if book['id'] != 1 and not book['name'].startswith('AI评估词库-') %}
+                    <form action="/delete_book/{{ book['id'] }}" method="POST"
+                          onsubmit="return confirm('确定要删除该词书及其中的所有单词吗？该操作不可恢复！');">
+                        <button type="submit" class="btn btn-danger btn-sm">删除</button>
+                    </form>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        {% else %}
+        {# books 表为空（正常情况至少有默认词书）#}
+        <div class="alert alert-secondary">还没有任何词书。</div>
+        {% endfor %}
+
+        <!-- ========== 返回首页 ========== -->
+        <div class="text-center mt-3">
+            <a href="{{ url_for('index') }}" class="btn btn-outline-primary">← 返回首页</a>
+        </div>
+    </div>
+
+    <!-- Bootstrap 5 JS【本地化】（含 Popper，打包后离线可用） -->
+    <script src="{{ url_for('static', filename='bootstrap.bundle.min.js') }}"></script>
+    <script>
+        /* ============================================================
+         * 重命名词书（纯前端弹框 + 动态表单，逻辑与原版完全一致）
+         * 点击"重命名" -> 读 data-id / data-name -> prompt 输入新名
+         * -> 动态创建隐藏表单 POST 到 /rename_book/<book_id>（字段 new_name 不变）
+         * ============================================================ */
+        function renameBook(btn) {
+            // getAttribute 会自动把 &#34; 等 HTML 转义还原成原始字符
+            var bookId = btn.getAttribute('data-id');
+            var currentName = btn.getAttribute('data-name');
+
+            var newName = prompt('请输入新的词书名称：', currentName);
+            if (newName === null) {
+                return;   // 点"取消"：什么都不做
+            }
+            newName = newName.trim();
+            if (newName === '') {
+                alert('词书名称不能为空');
+                return;
+            }
+
+            // 动态创建隐藏表单并提交（POST 必须用表单，<a> 只能 GET）
+            var form = document.createElement('form');
+            form.method = 'POST';
+            form.action = '/rename_book/' + bookId;
+
+            var input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'new_name';
+            input.value = newName;
+            form.appendChild(input);
+
+            document.body.appendChild(form);  // 先挂到页面上，部分浏览器才允许 submit
+            form.submit();
+        }
+    </script>
+</body>
+</html>

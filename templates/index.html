@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AILex</title>
+
+    <!-- ============================================================
+         滚动位置恢复 · 防闪烁预处理（核心修复）
+         必须放在 <head> 里、作为"同步内联脚本"，这样它会在浏览器
+         绘制首屏【之前】就执行，时机比 body 末尾的任何脚本都早。
+
+         闪烁原因：点"认识/不认识"是表单提交（POST 后 302 重定向回本页），
+         新页面默认先在"顶部"绘制一帧，旧代码等到 body 末尾才 scrollTo，
+         于是肉眼看到"先闪一下顶部 → 再滑回原位置"。
+
+         这里在首帧渲染前做两件事：
+           1. history.scrollRestoration = 'manual'
+              告诉浏览器：滚动位置别自己管，全部交给下面的 JS 手动恢复；
+           2. 如果 sessionStorage 里有上次离开前保存的位置（且 > 0），
+              先把整个 <html> 设为 visibility:hidden（占位但不可见），
+              等 body 末尾的恢复脚本把 scrollY 校正后再解除隐藏，
+              用户第一眼看到的就是恢复后的位置，顶部那一帧永远不会被画出来。
+         安全兜底：body 末尾的脚本里有 load / 1秒超时 / pageshow 三重
+              "解除隐藏"机制，即使恢复出错，页面也绝不会一直白屏。
+         ============================================================ -->
+    <script>
+        // 第1件事：关闭浏览器自动滚动恢复（支持的浏览器才设置）
+        if ('scrollRestoration' in history) {
+            history.scrollRestoration = 'manual';
+        }
+
+        // 第2件事：【防抽搐】强制瞬时滚动。
+        // 如果 CSS 或浏览器设置里有 scroll-behavior: smooth，
+        // window.scrollTo 会变成滚动动画，与显隐恢复逻辑叠加就会
+        // "上下抖好几下"才稳定；设为 auto 后所有 scrollTo 一步到位
+        document.documentElement.style.scrollBehavior = 'auto';
+
+        // 第3件事：有保存位置时，在首屏绘制前把整页隐藏
+        (function () {
+            try {
+                var pos = sessionStorage.getItem('scrollPosition');
+                // 严格判空并解析数字：null（正常进入）或 0（本来就在顶部）都不隐藏，
+                // 避免无意义的隐藏-显示过程
+                if (pos !== null && (parseInt(pos, 10) || 0) > 0) {
+                    document.documentElement.style.visibility = 'hidden';
+                }
+            } catch (e) {
+                /* sessionStorage 被禁用等极端情况：什么都不做，页面正常显示 */
+            }
+        })();
+    </script>
+
+    <!-- Bootstrap 5 CSS【本地化】：走 Flask 的 static 目录（打包后离线可用，不再依赖 CDN） -->
+    <link href="{{ url_for('static', filename='bootstrap.min.css') }}" rel="stylesheet">
+
+    <!-- 【防跳动】强制页面始终显示垂直滚动条：
+         有的页面内容多（出现滚动条）、有的内容少（无滚动条），
+         切换页面时滚动条的出现/消失会让可视区域宽度变化，
+         页面整体就会横向跳动一下；常驻滚动条可彻底消除这个位移 -->
+    <style>
+        html { overflow-y: scroll; }
+    </style>
+</head>
+<body class="bg-light">
+    {# 页面主体容器：【防跳动】
+       1. max-width 960px —— 四个页面（index/history/books/ai_book）统一宽度；
+       2. min-height: 100vh —— 内容再少也让容器撑满整个视口高度，
+          防止页面高度骤降引发的纵向视觉跳动 #}
+    <div class="container py-4" style="max-width: 960px; min-height: 100vh;">
+
+        <!-- ========== 顶部标题 + 每日目标设置（POST /settings，字段名 daily_goal 不变） ========== -->
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+            <h1 class="h3 mb-0">词汇学习</h1>
+            <form action="/settings" method="POST" class="d-flex align-items-center gap-2">
+                <label class="form-label small mb-0 text-muted">每日新词目标：</label>
+                <input type="number" name="daily_goal" value="{{ daily_goal }}" min="1" max="500"
+                       class="form-control form-control-sm" style="width:90px;">
+                <button type="submit" class="btn btn-outline-secondary btn-sm">设置</button>
+            </form>
+        </div>
+
+        <!-- ========== 共享导航栏（机制不变：{% include 'nav.html' %}） ========== -->
+        {% include 'nav.html' %}
+
+        <!-- ========== flash 一次性提示：success -> 绿色 alert；error -> 红色 alert ========== -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% for category, message in messages %}
+            {# 【对齐修复】容器加 d-flex align-items-center，文字包进 flex-grow-1 me-3：
+               旧写法里 {{ message }} 是裸文本、与 inline 的关闭按钮按"基线"对齐，
+               按钮盒子比文字行高大，于是 ❌ 看起来偏上/错位。
+               现在文字占满剩余宽度（flex-grow-1）并与按钮留 1rem 间距（me-3），
+               btn-close 排在最右，两者垂直绝对居中。
+               颜色分类逻辑（success 绿 / 其他红）保持不变 #}
+            <div class="alert alert-{{ 'success' if category == 'success' else 'danger' }} alert-dismissible fade show d-flex align-items-center py-2"
+                 role="alert">
+                <div class="flex-grow-1 me-3">{{ message }}</div>
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="关闭"></button>
+            </div>
+            {% endfor %}
+        {% endwith %}
+
+        <!-- ========== 上传自定义词书（POST /upload，必须保留 enctype，字段 book_name/wordbook 不变）
+             【布局改造】用 Bootstrap 5 的 Flexbox 工具类实现一行排布：
+               - d-flex flex-wrap align-items-center gap-2：
+                 横向排列 + 垂直居中 + 元素间 0.5rem 间距；
+                 flex-wrap 是手机/极窄窗口的兜底（空间不够才换行），
+                 容器放宽到 960px 后，正常电脑屏幕四个元素必定一行放下
+               - 文件选择框加 flex-grow-1（flex: 1 1 0%）：吃掉剩余全部横向空间，
+                 并去掉原来 280px 的宽度上限，让"上传词书"按钮紧紧贴在它右侧
+               - 词书名称输入框收窄为 180px（够用即可，把空间让给文件框）；
+                 标签和按钮加 text-nowrap，防止文字本身折行 -->
+        <div class="card shadow-sm rounded-3 mb-2">
+            <div class="card-body py-2">
+                <form action="{{ url_for('upload') }}" method="POST" enctype="multipart/form-data"
+                      class="d-flex flex-wrap align-items-center gap-2">
+                    <span class="fw-bold text-nowrap">📚 自定义词书：</span>
+                    <input type="text" name="book_name" class="form-control form-control-sm"
+                           style="max-width:180px;" placeholder="词书名称（可选）" maxlength="50">
+                    <input type="file" name="wordbook" accept=".txt,.csv" required
+                           class="form-control form-control-sm flex-grow-1">
+                    <button type="submit" class="btn btn-primary btn-sm text-nowrap">上传词书</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- ========== 当前词书 ========== -->
+        <div class="alert alert-secondary py-2 mb-2">
+            📖 当前词书：<strong>{{ current_book_name }}</strong>
+            <span class="small">（可在<a href="{{ url_for('books') }}" class="alert-link">词书管理</a>中切换）</span>
+        </div>
+
+        <!-- ========== 总进度统计（用彩色 Badge 替代旧的内联颜色文字） ========== -->
+        <div class="card shadow-sm rounded-3 mb-2">
+            <div class="card-body py-2 small">
+                总进度：共 <strong>{{ total_count }}</strong> 词 ｜
+                <span class="badge text-bg-success">已掌握 {{ known_count }}</span>
+                <span class="badge text-bg-warning">学习中 {{ learning_count }}</span>
+                <span class="badge text-bg-primary">未学 {{ new_count }}</span>
+            </div>
+        </div>
+
+        <!-- ========== 今日新词进度（Bootstrap Progress 组件） ========== -->
+        <div class="card shadow-sm rounded-3 mb-2">
+            <div class="card-body py-2">
+                <div class="small mb-1">今日新词进度：{{ new_words_today }} / {{ daily_goal }}</div>
+                {# progress：进度条容器；role/aria 属性方便无障碍；
+                   宽度直接用 Jinja 渲染成内联 width，不再需要旧版 JS 设宽度 #}
+                <div class="progress" role="progressbar" style="height:20px;"
+                     aria-valuenow="{{ progress_percent }}" aria-valuemin="0" aria-valuemax="100">
+                    <div class="progress-bar bg-success progress-bar-striped"
+                         style="width: {{ progress_percent }}%;">{{ progress_percent }}%</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ========== 今日待复习 ========== -->
+        <div class="alert alert-info py-2 mb-3">
+            今日待复习：<strong>{{ review_pending }}</strong> 个单词
+        </div>
+
+        <!-- ========== 模式标识 Badge（仅在有单词卡片时显示） ========== -->
+        {% if word %}
+        <div class="text-center mb-2">
+            {% if mode == 'review' %}
+            <span class="badge text-bg-danger px-3 py-2">复习模式</span>
+            {% else %}
+            <span class="badge text-bg-primary px-3 py-2">新词学习</span>
+            {% endif %}
+        </div>
+        {% endif %}
+
+        {% if mode == 'review' %}
+            {# ===================== 复习模式 ===================== #}
+            {% if word %}
+            <div class="card shadow-sm rounded-3 mb-3">
+                <div class="card-body text-center p-4">
+                    <div class="display-6 fw-bold mb-2">{{ word['word'] }}</div>
+
+                    {% if word['phonetic'] %}
+                    <div class="text-muted mb-2">音标：{{ word['phonetic'] }}</div>
+                    {% else %}
+                    <div class="text-secondary mb-2">（暂无音标）</div>
+                    {% endif %}
+
+                    {# 有道在线发音：data-word / data-type 是 JS 钩子，class btn-speak 必须保留 #}
+                    <div class="mb-2">
+                        <button class="btn btn-outline-primary btn-sm btn-speak"
+                                data-word="{{ word['word'] }}" data-type="1">🔊 英音</button>
+                        <button class="btn btn-outline-primary btn-sm btn-speak"
+                                data-word="{{ word['word'] }}" data-type="2">🔊 美音</button>
+                    </div>
+
+                    {% if word['review_stage'] and word['review_stage'] > 0 %}
+                    <div class="small text-muted mb-2">复习阶段：{{ word['review_stage'] }} / 5</div>
+                    {% else %}
+                    <div class="small text-secondary mb-2">复习阶段：0 / 5</div>
+                    {% endif %}
+
+                    {# 释义默认隐藏（Bootstrap d-none），点按钮切换 d-none 实现显示/隐藏 #}
+                    <div id="meaningBox" class="d-none alert alert-light border mb-3">
+                        释义：{{ word['meaning'] }}
+                    </div>
+                    <button class="btn btn-outline-info btn-sm"
+                            onclick="document.getElementById('meaningBox').classList.toggle('d-none')">
+                        显示/隐藏释义
+                    </button>
+
+                    {# 复习提交表单：action=/submit，字段 word_id / mode=review / action 全部保持不变 #}
+                    <div class="d-flex justify-content-center gap-3 mt-4 flex-wrap">
+                        <form action="/submit" method="POST">
+                            <input type="hidden" name="word_id" value="{{ word['id'] }}">
+                            <input type="hidden" name="mode" value="review">
+                            <button type="submit" name="action" value="认识"
+                                    class="btn btn-success btn-lg px-4">✓ 认识</button>
+                        </form>
+                        <form action="/submit" method="POST">
+                            <input type="hidden" name="word_id" value="{{ word['id'] }}">
+                            <input type="hidden" name="mode" value="review">
+                            <button type="submit" name="action" value="不认识"
+                                    class="btn btn-danger btn-lg px-4">✗ 不认识</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            {% elif review_done %}
+            {# ---- 今日复习完毕 ---- #}
+            <div class="alert alert-warning text-center p-5 rounded-3">
+                <p class="fs-5">✅ 今日复习完毕！</p>
+                <p>所有到期单词都已复习过</p>
+                <a href="{{ url_for('index') }}" class="btn btn-primary">← 返回新词学习模式</a>
+            </div>
+            {% endif %}
+
+        {% else %}
+            {# ===================== 新词学习模式 ===================== #}
+            {% if word %}
+            <div class="card shadow-sm rounded-3 mb-3">
+                <div class="card-body text-center p-4">
+                    <div class="display-6 fw-bold mb-2">{{ word['word'] }}</div>
+
+                    {% if word['phonetic'] %}
+                    <div class="text-muted mb-2">音标：{{ word['phonetic'] }}</div>
+                    {% else %}
+                    <div class="text-secondary mb-2">（暂无音标）</div>
+                    {% endif %}
+
+                    <div class="mb-2">
+                        <button class="btn btn-outline-primary btn-sm btn-speak"
+                                data-word="{{ word['word'] }}" data-type="1">🔊 英音</button>
+                        <button class="btn btn-outline-primary btn-sm btn-speak"
+                                data-word="{{ word['word'] }}" data-type="2">🔊 美音</button>
+                    </div>
+
+                    <div class="small text-secondary mb-2">新词</div>
+
+                    <div id="meaningBox" class="d-none alert alert-light border mb-3">
+                        释义：{{ word['meaning'] }}
+                    </div>
+                    <button class="btn btn-outline-info btn-sm"
+                            onclick="document.getElementById('meaningBox').classList.toggle('d-none')">
+                        显示/隐藏释义
+                    </button>
+
+                    {# 新词提交表单：mode=new，其余字段与复习模式一致 #}
+                    <div class="d-flex justify-content-center gap-3 mt-4 flex-wrap">
+                        <form action="/submit" method="POST">
+                            <input type="hidden" name="word_id" value="{{ word['id'] }}">
+                            <input type="hidden" name="mode" value="new">
+                            <button type="submit" name="action" value="认识"
+                                    class="btn btn-success btn-lg px-4">✓ 认识</button>
+                        </form>
+                        <form action="/submit" method="POST">
+                            <input type="hidden" name="word_id" value="{{ word['id'] }}">
+                            <input type="hidden" name="mode" value="new">
+                            <button type="submit" name="action" value="不认识"
+                                    class="btn btn-danger btn-lg px-4">✗ 不认识</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            {% elif book_finished %}
+            {# ---- 当前词书整本学完：优先级最高 ---- #}
+            <div class="alert alert-success text-center p-5 rounded-3">
+                <p class="fs-5">🎉 当前词书已学完！去<a href="{{ url_for('books') }}" class="alert-link fw-bold">词书管理</a>切换新词书吧！</p>
+                {% if review_pending > 0 %}
+                <p>还有 <strong>{{ review_pending }}</strong> 个单词需要复习</p>
+                <a href="{{ url_for('review') }}" class="btn btn-primary">进入复习模式 →</a>
+                {% endif %}
+            </div>
+
+            {% elif new_task_done and review_pending > 0 %}
+            {# ---- 今日新词完成但还有待复习 ---- #}
+            <div class="alert alert-warning text-center p-5 rounded-3">
+                <p class="fs-5">📝 今日新词已完成！（{{ new_words_today }} / {{ daily_goal }}）</p>
+                <p>还有 <strong>{{ review_pending }}</strong> 个单词需要复习</p>
+                <a href="{{ url_for('review') }}" class="btn btn-primary mb-2">进入复习模式 →</a>
+                {# 加练：POST /continue_learning，current_batch 文案逻辑不变 #}
+                <form action="{{ url_for('continue_learning') }}" method="POST">
+                    <button type="submit" class="btn btn-success">继续学习（今日第{{ current_batch }}次加练）</button>
+                </form>
+            </div>
+
+            {% elif new_task_done and review_pending == 0 %}
+            {# ---- 今日全部完成（书里还有新词，只是今天目标学满了）---- #}
+            <div class="alert alert-success text-center p-5 rounded-3">
+                <p class="fs-5">🎉 今日任务已全部完成！</p>
+                <p>新词 {{ new_words_today }} / {{ daily_goal }}，待复习 0 个</p>
+                <form action="{{ url_for('continue_learning') }}" method="POST">
+                    <button type="submit" class="btn btn-success">继续学习（今日第{{ current_batch }}次加练）</button>
+                </form>
+            </div>
+            {% endif %}
+        {% endif %}
+    </div>
+
+    <!-- Bootstrap 5 JS【本地化】（含 Popper，打包后离线可用） -->
+    <script src="{{ url_for('static', filename='bootstrap.bundle.min.js') }}"></script>
+    <script>
+        /* ============================================================
+         * 1. 恢复滚动位置（防闪烁 + 防抽搐精简版）
+         *
+         * 时序设计（关键）：
+         *   <head> 已把页面隐藏 -> 这里【只滚动一次】到目标位置 -> 立即显示。
+         *   之所以"一次就准"：本脚本在 body 末尾执行时，<head> 里的
+         *   Bootstrap CSS 已加载完（外部 CSS 会阻塞后续脚本执行），
+         *   DOM 也已解析完毕，布局已定型，不需要多帧/多次校正。
+         *
+         * 【精简说明】旧版"两层 requestAnimationFrame 反复校正 + load 里
+         *   再滚一次"的多次滚动叠加，正是页面上下抖动（抽搐）的来源，
+         *   已全部删除；配合 <head> 里的 scrollBehavior='auto'，
+         *   现在滚动是瞬时跳转，一步到位。
+         *
+         * 多重兜底（只负责"让页面可见"，绝不再滚动，因此不会抖）：
+         *   a. window load / b. 1 秒硬超时 / c. pageshow（含 bfcache）；
+         *   即使恢复出错，页面也绝不会一直白屏。
+         * ============================================================ */
+        (function () {
+            var savedScroll = null;
+            try {
+                savedScroll = sessionStorage.getItem('scrollPosition');
+            } catch (e) { /* 读取失败按"无保存位置"处理 */ }
+
+            // 解除 <head> 脚本设置的 visibility:hidden，让页面可见
+            function revealPage() {
+                document.documentElement.style.visibility = '';
+            }
+
+            // 没有保存位置（手动输入网址/新开标签页进入）：页面本来就没被隐藏，直接结束
+            if (savedScroll === null) {
+                revealPage();
+            } else {
+                var targetY = parseInt(savedScroll, 10) || 0;
+                // 用完立刻删除：只在"提交后的下一次加载"恢复一次，
+                // 避免之后手动访问网址也跳到旧位置
+                try {
+                    sessionStorage.removeItem('scrollPosition');
+                } catch (e) {}
+
+                // 【一次性恢复】只滚动一次 + 立即显示，不做任何二次校正
+                function restoreScroll() {
+                    window.scrollTo(0, targetY);
+                    revealPage();
+                }
+
+                // DOM 还在解析就等 DOMContentLoaded；脚本在 body 末尾，
+                // 正常情况下 readyState 已是 interactive，直接恢复即可
+                if (document.readyState === 'loading') {
+                    document.addEventListener('DOMContentLoaded', restoreScroll);
+                } else {
+                    restoreScroll();
+                }
+
+                // 兜底 a：load 时仅确保页面可见（【不再】二次滚动，防抖动）
+                window.addEventListener('load', revealPage);
+                // 兜底 c：往返缓存（bfcache）恢复时也确保页面可见
+                window.addEventListener('pageshow', revealPage);
+            }
+
+            // 兜底 b：1 秒后无条件解除隐藏，防止任何意外导致页面一直空白
+            setTimeout(function () {
+                document.documentElement.style.visibility = '';
+            }, 1000);
+        })();
+
+        /* ---- 离开页面前保存当前滚动位置 ----
+         * beforeunload 在表单提交（点认识/不认识）、链接跳转、刷新时都会触发。
+         * 只在"离开时"写一次 sessionStorage，不监听 scroll 事件高频写入，
+         * 避免滚动-写入-再滚动互相干扰造成抖动。 */
+        window.addEventListener('beforeunload', function () {
+            try {
+                sessionStorage.setItem('scrollPosition', window.scrollY);
+            } catch (e) {}
+        });
+
+        /* ============================================================
+         * 2. 单词发音：有道词典在线发音（原逻辑原样保留）
+         *    type=1 英式发音，type=2 美式发音
+         * ============================================================ */
+        function playAudio(word, type) {
+            try {
+                var url = 'https://dict.youdao.com/dictvoice?audio='
+                          + encodeURIComponent(word) + '&type=' + type;
+                var audio = new Audio(url);
+                var playPromise = audio.play();
+                if (playPromise !== undefined) {
+                    playPromise.catch(function () {
+                        alert('网络异常，无法播放发音');
+                    });
+                }
+            } catch (e) {
+                alert('网络异常，无法播放发音');
+            }
+        }
+
+        // class btn-speak 是本页发音按钮的 JS 钩子（已保留在按钮上）
+        var speakButtons = document.querySelectorAll('.btn-speak');
+        for (var i = 0; i < speakButtons.length; i++) {
+            speakButtons[i].addEventListener('click', function () {
+                playAudio(this.getAttribute('data-word'), this.getAttribute('data-type'));
+            });
+        }
+    </script>
+</body>
+</html>

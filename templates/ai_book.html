@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI词汇评估-AILex</title>
+    <!-- Bootstrap 5 CSS【本地化】：走 Flask 的 static 目录（打包后离线可用，不再依赖 CDN） -->
+    <link href="{{ url_for('static', filename='bootstrap.min.css') }}" rel="stylesheet">
+
+    <!-- 【防跳动】强制页面始终显示垂直滚动条：
+         有的页面内容多（出现滚动条）、有的内容少（无滚动条），
+         切换页面时滚动条的出现/消失会让可视区域宽度变化，
+         页面整体就会横向跳动一下；常驻滚动条可彻底消除这个位移 -->
+    <style>
+        html { overflow-y: scroll; }
+
+        /* 【视觉精简】输入框聚焦时去掉蓝色外框和阴影：
+           input-group 中 form-control 聚焦时的 outline + box-shadow
+           会顶到右侧"开始评估"按钮，交界处出现一圈蓝框很难看。
+           两处 !important 用于压过 Bootstrap 的 .form-control:focus 样式 */
+        input:focus {
+            outline: none !important;
+            box-shadow: none !important;
+        }
+    </style>
+</head>
+<body class="bg-light">
+    <!-- 【防跳动】容器样式与首页 index.html 完全一致：
+         1. max-width 960px —— 四个页面统一宽度，避免切换时宽度忽宽忽窄；
+         2. min-height: 100vh —— 内容再少也撑满视口高度，
+            防止页面高度骤降引发的纵向视觉跳动 -->
+    <div class="container py-4" style="max-width: 960px; min-height: 100vh;">
+
+        <!-- ========== 顶部标题 ========== -->
+        <h1 class="h3 mb-3">AI词汇评估</h1>
+
+        <!-- ========== 共享导航栏 ========== -->
+        {% include 'nav.html' %}
+
+        <!-- ========== flash 提示条（评估成功/重复入库/失败） ========== -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% for category, message in messages %}
+            {# 【精简】flash 改为纯静态提示条：
+               直接删除关闭按钮 btn-close，并移除配套的 alert-dismissible
+               和 fade show（两者只在有按钮时可交互/做消失动画，没有按钮
+               就是死代码），从此彻底不存在"❌ 垂直不居中"的问题；
+               用户可刷新页面或无视，提示随下一次跳转自动消失。
+               颜色分类逻辑（success 绿 / 其他红）保持不变 #}
+            <div class="alert alert-{{ 'success' if category == 'success' else 'danger' }} py-2"
+                 role="alert">
+                {{ message }}
+            </div>
+            {% endfor %}
+        {% endwith %}
+
+        <!-- ========== 页面说明 ==========
+             【精简】原来上方单独一行"分类标签页"已删除——它与输入框下方的
+             类别按钮功能重复。现在类别切换全部由下方"二合一按钮"承担 -->
+        <div class="alert alert-warning py-2">
+            下方的类别按钮既是词库视图也是评估类别（当前类别高亮显示）：
+            输入英文单词后点击「开始评估」或直接按回车，AI 就会以该类别考试专家的视角
+            评估单词的重要程度（1-5星），结果存入当前类别的词库；
+            点击其他类别按钮可切换到对应词库。
+        </div>
+
+        <!-- ========== AI 评估输入区（类别切换 + 评估提交二合一）==========
+             【精简改造】原"上方标签页 + 下方模式按钮"两套控件合并为一套：
+               1. 文本框 name="word"       —— 用户输入的单词
+               2. 隐藏域 name="exam_type"   —— 当前页面类别，点「开始评估」时
+                  提交的就是它，服务端直接读取，无需 JS 干预
+               3. 四个类别链接 <a> —— 视图切换 + 模式选择二合一：
+                  当前类别 btn-primary 实心高亮；其他类别 btn-outline-primary
+                  灰色轮廓，点击跳转 /ai_book?exam_type=xxx 切换词库视图
+                  （<a> 链接不会触发表单提交）
+               4. 「开始评估」type="submit" —— 唯一提交入口（回车也会提交），逻辑未动
+             表单 id="aiEvalForm"、按钮 id="btnStart" 仍是下方 JS 的钩子 -->
+        <div class="card shadow-sm rounded-3 mb-3">
+            <div class="card-body">
+                <form action="{{ url_for('ai_evaluate') }}" method="POST" id="aiEvalForm">
+                    <!-- 第一行：input-group 输入框 + 提交按钮组合（手机端自动纵向拉伸）-->
+                    <div class="input-group">
+                        <input type="text" name="word" class="form-control"
+                               placeholder="请输入英文单词，如：abandon"
+                               maxlength="50" required autofocus>
+                        {# disabled 后 Bootstrap 自动变灰（:disabled 样式），文字由 JS 改为"评估中" #}
+                        <button type="submit" class="btn btn-primary" id="btnStart">开始评估</button>
+                    </div>
+
+                    {# 隐藏域：值 = 当前页面类别。
+                       注意：后端 /ai_book 实际传入的模板变量名是 exam_type
+                       （与 URL 参数同名），所以这里用它而不是需求示意里的
+                       current_exam_type——用错名字会取不到值 #}
+                    <input type="hidden" name="exam_type" id="exam_type" value="{{ exam_type }}">
+
+                    <!-- 第二行：类别按钮（视图切换 + 模式选择二合一）
+                         当前类别：btn-primary 实心蓝 = 正在查看的词库 = 提交评估的类别
+                         其他类别：btn-outline-primary 灰色轮廓，点击跳转切换视图；
+                         页面刷新后高亮和隐藏域由服务端重新渲染，自动跟着变，
+                         不需要任何 JS（原来 selectExam 切换逻辑已随标签页一并删除）-->
+                    <div class="d-flex flex-wrap gap-2 mt-3">
+                        {% for et in exam_types %}
+                        <a href="{{ url_for('ai_book', exam_type=et) }}"
+                           class="btn flex-grow-1 {% if et == exam_type %}btn-primary{% else %}btn-outline-primary{% endif %}"
+                           style="min-width:100px;">
+                            {{ et }}
+                        </a>
+                        {% endfor %}
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- ========== 词库总览：已评估词数 + 平均星级（只统计当前分类的词书） ========== -->
+        <div class="alert alert-light border py-2 mb-3">
+            📚 AI评估词库-{{ exam_type }}：已评估 <strong>{{ total_count }}</strong> 个单词 ｜
+            平均重要性 <strong>{{ avg_score }}</strong> / 5 星
+        </div>
+
+        <!-- ========== 已评估单词列表（后端按 ai_score 降序）========== -->
+        {% for w in word_list %}
+        {# 5 分重点词：左侧加一条金色竖边（Bootstrap border-warning border-4）#}
+        <div class="card shadow-sm rounded-3 mb-2 {% if w['ai_score'] == 5 %}border-start border-warning border-4{% endif %}">
+            <div class="card-body py-3 d-flex flex-wrap justify-content-between align-items-center gap-3">
+                <div class="flex-grow-1" style="min-width:220px;">
+                    <div class="fs-5 fw-bold">
+                        {# 考试类型徽章：四种考试用不同颜色 Badge 区分（变量名 exam_type 不变）#}
+                        {% set et = w['exam_type'] or '六级' %}
+                        {% if et == '六级' %}
+                        <span class="badge text-bg-primary">[{{ et }}]</span>
+                        {% elif et == '雅思' %}
+                        <span class="badge text-bg-success">[{{ et }}]</span>
+                        {% elif et == '托福' %}
+                        <span class="badge text-bg-warning">[{{ et }}]</span>
+                        {% elif et == '考研' %}
+                        <span class="badge text-bg-info">[{{ et }}]</span>
+                        {% else %}
+                        <span class="badge text-bg-secondary">[{{ et }}]</span>
+                        {% endif %}
+                        {{ w['word'] }}
+                    </div>
+                    <div class="text-muted">{{ w['meaning'] }}</div>
+                    {% if w['ai_reason'] %}
+                    <div class="small text-secondary mt-1">🤖 AI点评：{{ w['ai_reason'] }}</div>
+                    {% endif %}
+                </div>
+
+                <div class="text-center text-nowrap">
+                    {# 星级：实心 ⭐ + 灰色 ☆ 占位，始终整齐 5 个星位 #}
+                    <div class="fs-6">
+                        {% for i in range(5) %}
+                            {% if i < w['ai_score'] %}⭐{% else %}<span class="text-secondary">☆</span>{% endif %}
+                        {% endfor %}
+                    </div>
+                    {# 分数用黄色 Badge 显示 #}
+                    <div><span class="badge text-bg-warning">{{ w['ai_score'] }} / 5</span></div>
+
+                    {# 删除单词：POST /delete_ai_word/<id>，保留原生 confirm 二次确认；
+                       只删 words 表这一条，study_log 学习历史保留 #}
+                    <form action="/delete_ai_word/{{ w['id'] }}" method="POST" class="mt-2"
+                          onsubmit="return confirm('确定要删除这个单词吗？删除后不可恢复，但学习记录会保留。');">
+                        <button type="submit" class="btn btn-danger btn-sm">🗑 删除</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+        {% else %}
+        {# word_list 为空时的空状态引导（提示语带上当前分类名） #}
+        <div class="card shadow-sm rounded-3">
+            <div class="card-body text-center p-5 text-muted">
+                <p class="fs-5">📭 AI评估词库-{{ exam_type }} 还是空的</p>
+                <p>在上方输入一个单词，试试让 AI 帮你判断它值不值得背吧！</p>
+            </div>
+        </div>
+        {% endfor %}
+
+        <!-- ========== 【新增】AI 配置区：密钥管理 + 危险操作 ==========
+             放在页面底部，与评估主流程分开，避免误触 -->
+        <div class="card shadow-sm rounded-3 mb-2">
+            <div class="card-body py-3">
+
+                {# ---- API Key 表单 ----
+                   1. type="password"：输入内容打码显示；
+                      出于安全考虑【不回显】已保存的 Key（后端也不把它带进 HTML），
+                      输入框永远为空，填了新的再提交即可覆盖；
+                   2. 留空提交 = 清空密钥（后端会重置 config.txt 为占位符）；
+                   3. 提交到 POST /save_api_key，保存后立即生效无需重启 #}
+                <form action="/save_api_key" method="POST"
+                      class="d-flex flex-wrap align-items-center gap-2">
+                    <span class="small text-muted text-nowrap">AI 平台密钥：</span>
+                    <input type="password" name="api_key" class="form-control form-control-sm"
+                           style="max-width:260px;" placeholder="sk-...（留空提交=清空）">
+                    <button type="submit" class="btn btn-primary btn-sm text-nowrap">保存密钥</button>
+                </form>
+                <div class="form-text small">
+                    密钥保存在程序同目录的 config.txt 中，仅用于调用 AI 接口。
+                </div>
+
+                <hr class="my-3">
+
+                {# ---- 危险操作：一键重置所有数据 ----
+                   confirm 二次确认写在 form 的 onsubmit 上（与删除词书同一套写法），
+                   文案为纯静态字符串，避免引号冲突；
+                   后端 /reset_all_data 会删除整个数据库并重新导入默认词书 #}
+                <form action="/reset_all_data" method="POST"
+                      onsubmit="return confirm('确定要删除所有数据吗？包括词书、学习进度和 AI 评估记录，此操作不可恢复！');">
+                    <button type="submit" class="btn btn-outline-danger btn-sm">
+                        重置所有数据（相当于恢复出厂设置）
+                    </button>
+                </form>
+                <div class="form-text small text-danger">
+                    将删除全部词书、学习进度与 AI 评估记录，并重新导入默认词书，请谨慎操作。
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap 5 JS【本地化】（含 Popper，打包后离线可用） -->
+    <script src="{{ url_for('static', filename='bootstrap.bundle.min.js') }}"></script>
+    <script>
+        /* ============================================================
+         * 【精简】类别按钮已改为 <a> 链接，高亮由服务端渲染（btn-primary），
+         * 原来的模式切换 JS（含按钮组事件委托）已整体删除；
+         * 只保留两个纯表单交互，行为与原版完全一致：
+         *   1. 回车提交   2. 提交瞬间禁用按钮
+         * ============================================================ */
+        (function () {
+            'use strict';
+
+            var evalForm = document.getElementById('aiEvalForm');
+            var wordInput = evalForm.querySelector('input[name="word"]');
+
+            /* 回车 = 提交表单：阻止浏览器隐式提交（防重复 POST），
+               再用 requestSubmit() 手动提交一次（等价于点击"开始评估"）*/
+            wordInput.addEventListener('keydown', function (event) {
+                if (event.key === 'Enter') {
+                    event.preventDefault();
+                    evalForm.requestSubmit();
+                }
+            });
+
+            /* 提交瞬间禁用按钮（防 AI 响应慢时疯狂重复点击）：
+               - 不 preventDefault，表单照常 POST 到 /ai_evaluate，
+                 隐藏域 exam_type 的值 = 当前页面类别，服务端直接读取；
+               - disabled=true 后 Bootstrap 自动套用灰色禁用样式；
+               - 后端失败会重定向回本页，页面重载后按钮自动恢复。 */
+            var btnStart = document.getElementById('btnStart');
+            evalForm.addEventListener('submit', function () {
+                btnStart.disabled = true;
+                btnStart.textContent = '⏳ 评估中，请稍候...';
+            });
+        })();
+    </script>
+</body>
+</html>

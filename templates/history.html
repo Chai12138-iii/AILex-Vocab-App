@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>学习记录-AILex</title>
+    <!-- Bootstrap 5 CSS【本地化】：走 Flask 的 static 目录（打包后离线可用，不再依赖 CDN） -->
+    <link href="{{ url_for('static', filename='bootstrap.min.css') }}" rel="stylesheet">
+
+    <!-- 【防跳动】强制页面始终显示垂直滚动条：
+         有的页面内容多（出现滚动条）、有的内容少（无滚动条），
+         切换页面时滚动条的出现/消失会让可视区域宽度变化，
+         页面整体就会横向跳动一下；常驻滚动条可彻底消除这个位移 -->
+    <style>
+        html { overflow-y: scroll; }
+    </style>
+</head>
+<body class="bg-light">
+    <!-- 【防跳动】容器样式与首页 index.html 完全一致：
+         1. max-width 960px —— 四个页面统一宽度，避免切换时宽度忽宽忽窄；
+         2. min-height: 100vh —— 内容再少也撑满视口高度，
+            防止页面高度骤降引发的纵向视觉跳动 -->
+    <div class="container py-4" style="max-width: 960px; min-height: 100vh;">
+
+        <!-- ========== 顶部标题 ========== -->
+        <h1 class="h3 mb-3">学习记录</h1>
+
+        <!-- ========== 共享导航栏 ========== -->
+        {% include 'nav.html' %}
+
+        {% if history_days %}
+            {# ===================== 按天倒序的记录列表 ===================== #}
+            {% for day in history_days %}
+            {# 保留原生 <details>/<summary> 折叠（无需 JS），外层套 Bootstrap Card：
+               day.date / day.batch / day.total / day.known / day.unknown
+               以及 day.words 里的 item.word / item.meaning / item.action
+               全部是后端原变量名，未做任何改动 #}
+            <details class="card shadow-sm rounded-3 mb-2">
+                <summary class="card-header bg-white py-2 d-flex flex-wrap gap-2 align-items-baseline"
+                         style="cursor:pointer;user-select:none;">
+                    {# 标题：日期 + 第X次学习（加练批次）#}
+                    <span class="fw-bold">{{ day.date }} 第{{ day.batch }}次学习</span>
+                    <span class="text-muted small">
+                        学习了 {{ day.total }} 个单词
+                        <span class="badge text-bg-success">认识 {{ day.known }}</span>
+                        <span class="badge text-bg-danger">不认识 {{ day.unknown }}</span>
+                    </span>
+                </summary>
+                <div class="card-body pt-2 pb-1">
+                    {% for item in day.words %}
+                    {# 每个单词一行：拼写 | 释义 | 认识/不认识徽章，手机端自动换行 #}
+                    <div class="d-flex flex-wrap align-items-baseline gap-2 py-2 border-bottom">
+                        <span class="fw-bold" style="min-width:90px;">{{ item.word }}</span>
+                        <span class="text-muted small flex-grow-1">{{ item.meaning or '（暂无释义）' }}</span>
+                        {% if item.action == '认识' %}
+                        <span class="badge text-bg-success">认识</span>
+                        {% else %}
+                        <span class="badge text-bg-danger">不认识</span>
+                        {% endif %}
+                    </div>
+                    {% endfor %}
+                </div>
+            </details>
+            {% endfor %}
+
+        {% else %}
+            {# ===================== 还没有任何学习记录 ===================== #}
+            <div class="card shadow-sm rounded-3">
+                <div class="card-body text-center p-5 text-muted">
+                    <p class="fs-5">📭 还没有学习记录</p>
+                    <p>去学几个单词，这里就会显示你的历史啦</p>
+                </div>
+            </div>
+        {% endif %}
+
+        <!-- ========== 返回首页 ========== -->
+        <a href="{{ url_for('index') }}" class="btn btn-outline-primary mt-2">← 返回首页</a>
+    </div>
+
+    <!-- Bootstrap 5 JS【本地化】（含 Popper，打包后离线可用） -->
+    <script src="{{ url_for('static', filename='bootstrap.bundle.min.js') }}"></script>
+</body>
+</html>

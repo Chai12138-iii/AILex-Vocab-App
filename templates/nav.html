@@ -1,0 +1,73 @@
+{# ============================================================
+   全站统一导航栏（Bootstrap 5 版）
+   被 index / review(共用 index.html) / history / books / ai_book 通过
+   {% include 'nav.html' %} 引入，自动继承调用方上下文，无需额外传参。
+   依赖变量（后端传入，名称保持不变）：
+     - mode：当前页面标识 'new' / 'review' / 'history' / 'books' / 'ai'
+     - review_pending：当前词书的待复习单词数量
+   规则（与重构前完全一致，只换 Bootstrap 样式）：
+     1. 固定 5 个标签：新词学习 / 复习 / 学习记录 / 词书管理 / AI评估
+     2. 当前页：nav-pills 的 active 样式（蓝色填充胶囊）
+     3. 其他页：可点击的胶囊链接
+     4. 复习标签文字随数量变化：
+        - X>0：复习 (X个单词待复习)；X=0：灰色 disabled 的"复习"
+     5. 响应式：小屏自动换行（flex-wrap），不会挤压错位
+   ============================================================ #}
+<nav aria-label="全站导航">
+    {# nav-pills：胶囊式标签；nav-fill：各标签等宽；
+       flex-wrap + flex-lg-nowrap：手机端允许换行、大屏一行排开 #}
+    <ul class="nav nav-pills nav-fill gap-2 flex-wrap flex-lg-nowrap mb-3">
+
+        {# ---- 1. 新词学习（当前页用 <span class="nav-link active">，不可点击）---- #}
+        <li class="nav-item">
+            {% if mode == 'new' %}
+            <span class="nav-link active w-100">新词学习</span>
+            {% else %}
+            <a class="nav-link w-100" href="{{ url_for('index') }}">新词学习</a>
+            {% endif %}
+        </li>
+
+        {# ---- 2. 复习：文字按数量变化（X>0 显示待复习个数；X=0 显示灰色禁用态）---- #}
+        <li class="nav-item">
+            {% if mode == 'review' %}
+                {% if review_pending > 0 %}
+                <span class="nav-link active w-100">复习 ({{ review_pending }}个单词待复习)</span>
+                {% else %}
+                <span class="nav-link active w-100">复习</span>
+                {% endif %}
+            {% elif review_pending > 0 %}
+            <a class="nav-link w-100" href="{{ url_for('review') }}">复习 ({{ review_pending }}个单词待复习)</a>
+            {% else %}
+            {# disabled：Bootstrap 的禁用导航样式（灰色 + 不可点击）#}
+            <span class="nav-link disabled w-100">复习</span>
+            {% endif %}
+        </li>
+
+        {# ---- 3. 学习记录 ---- #}
+        <li class="nav-item">
+            {% if mode == 'history' %}
+            <span class="nav-link active w-100">学习记录</span>
+            {% else %}
+            <a class="nav-link w-100" href="{{ url_for('history') }}">学习记录</a>
+            {% endif %}
+        </li>
+
+        {# ---- 4. 词书管理 ---- #}
+        <li class="nav-item">
+            {% if mode == 'books' %}
+            <span class="nav-link active w-100">词书管理</span>
+            {% else %}
+            <a class="nav-link w-100" href="{{ url_for('books') }}">词书管理</a>
+            {% endif %}
+        </li>
+
+        {# ---- 5. AI评估（/ai_book），mode='ai' 时高亮 ---- #}
+        <li class="nav-item">
+            {% if mode == 'ai' %}
+            <span class="nav-link active w-100">AI评估</span>
+            {% else %}
+            <a class="nav-link w-100" href="{{ url_for('ai_book') }}">AI评估</a>
+            {% endif %}
+        </li>
+    </ul>
+</nav>
